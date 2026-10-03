@@ -25,7 +25,8 @@
         </div>
         <div id="published-list" class="card-grid"></div>
 
-        <h2 class="mt">继续已有演练</h2>
+        <h2 class="mt">继续已有演练 / 复盘分叉</h2>
+        <div class="muted" style="margin:-6px 0 10px">培训师可凭会话码打开任意会话（含已结局），在会话页右侧「复盘分叉」中选择历史步创建分支；分支沿用冻结版本，原会话不变。</div>
         <div class="inline-row">
           <input id="trainee-name" class="input" placeholder="学员姓名（可选，仅开始新演练时记录）" maxlength="100" />
         </div>
@@ -44,6 +45,7 @@
               会话码 <code id="ses-code"></code>
               · 冻结版本 <b id="ses-version"></b>
               · 当前第 <b id="ses-step">0</b> 步
+              <span id="ses-lineage"></span>
             </div>
           </div>
           <button class="btn ghost" id="btn-exit-session">返回列表</button>
@@ -71,6 +73,20 @@
             <div class="card">
               <h4>已走路径</h4>
               <ol id="path-list" class="path-list"></ol>
+            </div>
+            <div class="card fork-card">
+              <h4>🌿 复盘分叉（培训师）</h4>
+              <p class="hint">从本会话某个历史步创建可继续选择的分支。分支沿用当前冻结版本，保留分歧步之前的路径与现场状态；原会话与其它分支不变。结局步不可分叉。</p>
+              <div class="field">
+                <label>分歧步号（从第 0 步起）</label>
+                <select id="fork-step-select" class="input sm"></select>
+              </div>
+              <input id="fork-name" class="input sm" maxlength="100" placeholder="分支备注名（可选）" style="margin:6px 0" />
+              <button class="btn primary" id="btn-fork" style="width:100%">从此步创建分支</button>
+            </div>
+            <div class="card">
+              <h4>来源与分支对照</h4>
+              <div id="lineage-box"><div class="muted">加载中…</div></div>
             </div>
           </div>
         </div>

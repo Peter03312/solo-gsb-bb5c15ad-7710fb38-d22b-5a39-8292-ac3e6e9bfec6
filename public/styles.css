@@ -258,6 +258,32 @@ code { background: #eef2f6; padding: 1px 6px; border-radius: 4px; font-size: 12p
 .status-ended { color: var(--muted); }
 .status-active { color: var(--ok); font-weight: 600; }
 
+/* ---------- 复盘分叉 / 溯源对照 ---------- */
+.ses-actions { white-space: nowrap; }
+.ses-actions .btn { margin-right: 4px; padding: 4px 10px; }
+.branch-flag { color: var(--brand); }
+.branch-flag code { cursor: pointer; }
+.branch-flag code:hover { background: #dbe8f6; }
+
+.fork-card { border-color: #cfe0f2; background: #f8fbff; }
+.fork-card.flash { box-shadow: 0 0 0 3px rgba(31,95,168,.25); transition: box-shadow .3s; }
+.fork-card .field { margin-top: 8px; }
+.fork-card select { width: 100%; }
+
+.lg-node {
+  border-left: 2px solid var(--line);
+  padding: 6px 0 6px 10px;
+  margin-bottom: 8px;
+}
+.lg-node.lg-current { border-left-color: var(--brand); background: #f4f9ff; border-radius: 0 6px 6px 0; }
+.lg-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+.lg-head code { cursor: pointer; }
+.lg-head code:hover { background: #dbe8f6; }
+.lg-meta { margin-top: 2px; }
+.lg-path { margin-top: 4px; }
+.lg-path summary { cursor: pointer; font-size: 12px; color: var(--brand-dark); }
+.lg-path .path-list { margin-top: 6px; padding-left: 18px; }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;

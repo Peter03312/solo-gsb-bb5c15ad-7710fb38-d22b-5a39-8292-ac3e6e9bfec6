@@ -15,7 +15,7 @@ const {
   initialMask,
   decodeKey,
 } = require('./scenario');
-const { buildSnapshot, performMove } = require('./session');
+const { buildSnapshot, performMove, forkSession, loadLineage } = require('./session');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'app.db');
@@ -253,10 +253,11 @@ app.post('/api/sessions', (req, res) => {
 
   const code = newSessionCode();
   db.prepare(`
-    INSERT INTO sessions (code, scenario_id, version, current_node_id, state_mask, step_no, status, trainee_name)
-    VALUES (?, ?, ?, ?, ?, 0, 'active', ?)
+    INSERT INTO sessions (code, scenario_id, version, current_node_id, state_mask, step_no, status, trainee_name, root_code)
+    VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?)
   `).run(code, sc.id, sc.current_version, content.startNodeId, initialMask(content),
-    typeof traineeName === 'string' && traineeName.trim() ? traineeName.trim().slice(0, 100) : null);
+    typeof traineeName === 'string' && traineeName.trim() ? traineeName.trim().slice(0, 100) : null,
+    code);
 
   const session = db.prepare('SELECT * FROM sessions WHERE code = ?').get(code);
   res.status(201).json(buildSnapshot(content, session, sc.id, sc.current_version));
@@ -266,7 +267,8 @@ app.post('/api/sessions', (req, res) => {
 app.get('/api/sessions', (req, res) => {
   const rows = db.prepare(`
     SELECT se.code, se.scenario_id, s.title AS scenario_title, se.version, se.status,
-           se.step_no, se.trainee_name, se.current_node_id, se.created_at, se.updated_at
+           se.step_no, se.trainee_name, se.current_node_id, se.created_at, se.updated_at,
+           se.parent_code, se.fork_step_no, se.root_code
       FROM sessions se JOIN scenarios s ON s.id = se.scenario_id
      ORDER BY se.updated_at DESC LIMIT 200
   `).all();
@@ -308,6 +310,59 @@ app.post('/api/sessions/:code/move', (req, res) => {
     ...buildSnapshot(result.content, result.session, result.session.scenario_id, result.session.version),
     scenarioTitle: sc ? sc.title : null,
   });
+});
+
+// ---------- 培训师复盘：从历史局面分叉 ----------
+
+// 创建分支：{forkStepNo, observedStepNo, traineeName?}
+// 成功返回分支会话快照（沿用源绑定版本，步号重置为分歧步号）；
+// 源步号已变化/分歧点越界/结局步/会话或版本不存在时返回原因，
+// 能定位源会话时一并返回其当前步号（sourceCurrent.stepNo），且不创建分支。
+app.post('/api/sessions/:code/fork', (req, res) => {
+  const { forkStepNo, observedStepNo, traineeName } = req.body || {};
+  if (!Number.isInteger(forkStepNo)) {
+    return res.status(400).json({ error: '缺少或非法的 forkStepNo（分歧步号必须为非负整数）' });
+  }
+  if (!Number.isInteger(observedStepNo)) {
+    return res.status(400).json({ error: '缺少或非法的 observedStepNo（所见源当前步号必须为整数）' });
+  }
+
+  // 会话码随机碰撞时极小概率重试
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const newCode = newSessionCode();
+    const result = forkSession(db, {
+      sourceCode: req.params.code,
+      forkStepNo,
+      observedStepNo,
+      traineeName,
+      newCode,
+    });
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        errorCode: result.errorCode,
+        sourceCurrent: result.sourceCurrent || null,
+        current: result.current || null,
+      });
+    }
+    const sc = db.prepare('SELECT title FROM scenarios WHERE id = ?').get(result.session.scenario_id);
+    return res.status(201).json({
+      ok: true,
+      forkedFrom: req.params.code,
+      forkStepNo,
+      ...buildSnapshot(result.content, result.session, result.session.scenario_id, result.session.version),
+      scenarioTitle: sc ? sc.title : null,
+    });
+  }
+  return res.status(500).json({ error: '分支会话码生成失败，请重试' });
+});
+
+// 来源与分支对照：返回同一家族（root_code）下原始会话与全部分支的树，
+// 每个节点携带来源、分歧步与各自完整后续路径。
+app.get('/api/sessions/:code/lineage', (req, res) => {
+  const result = loadLineage(db, req.params.code);
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  res.json({ ok: true, rootCode: result.rootCode, requestedCode: result.requestedCode, tree: result.tree });
 });
 
 // 兜底：未匹配的 /api 返回 JSON 404

@@ -45,6 +45,9 @@ function initSchema() {
     status          TEXT NOT NULL DEFAULT 'active',  -- active / ended
     path            TEXT NOT NULL DEFAULT '[]',       -- [{step, fromNodeId, optionId, toNodeId, stateMask}]
     trainee_name    TEXT,
+    parent_code     TEXT REFERENCES sessions(code) ON DELETE RESTRICT, -- 复盘分叉的源会话；NULL 为原始会话
+    fork_step_no    INTEGER,              -- 分叉时的分歧步号（NULL 表示非分支）
+    root_code       TEXT,                 -- 家族根会话码（原始会话即自身 code，分支沿用源的 root）
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (scenario_id, version) REFERENCES versions(scenario_id, version) ON DELETE RESTRICT
@@ -52,7 +55,20 @@ function initSchema() {
 
   CREATE INDEX IF NOT EXISTS idx_versions_scenario ON versions(scenario_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_scenario ON sessions(scenario_id);
+  -- 注：idx_sessions_root 在下方迁移补列之后再创建（老库此时尚无 root_code 列）
   `);
+
+  // 老库迁移：补入复盘分叉所需的溯源列
+  const cols = db.prepare('PRAGMA table_info(sessions)').all();
+  const addColumn = (name, ddl) => {
+    if (!cols.some((c) => c.name === name)) db.exec(`ALTER TABLE sessions ADD COLUMN ${ddl}`);
+  };
+  addColumn('parent_code', 'parent_code TEXT');
+  addColumn('fork_step_no', 'fork_step_no INTEGER');
+  addColumn('root_code', 'root_code TEXT');
+  // 存量会话（含建表后尚未回填 root_code 的库）：无溯源信息即为原始会话，根是自身
+  db.exec(`UPDATE sessions SET root_code = code WHERE root_code IS NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_root ON sessions(root_code)`);
 }
 
 function newId(prefix) {
