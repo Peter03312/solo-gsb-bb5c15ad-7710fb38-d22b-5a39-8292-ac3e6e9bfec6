@@ -15,7 +15,7 @@ const {
   initialMask,
   decodeKey,
 } = require('./scenario');
-const { buildSnapshot, performMove } = require('./session');
+const { buildSnapshot, performMove, performFork, branchInfo, loadLineage } = require('./session');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'app.db');
@@ -220,6 +220,16 @@ app.post('/api/scenarios/:id/publish', (req, res) => {
 
 // ---------- 学员：版本与会话 ----------
 
+// 统一构造会话响应：现状快照 + 情境标题 + 分支血缘信息
+function sessionResponse(content, session, scenarioId, version) {
+  const sc = db.prepare('SELECT title FROM scenarios WHERE id = ?').get(scenarioId);
+  return {
+    ...buildSnapshot(content, session, scenarioId, version),
+    scenarioTitle: sc ? sc.title : null,
+    branch: branchInfo(db, session),
+  };
+}
+
 // 学员可见的已发布情境
 app.get('/api/published', (req, res) => {
   const rows = db.prepare(`
@@ -259,14 +269,15 @@ app.post('/api/sessions', (req, res) => {
     typeof traineeName === 'string' && traineeName.trim() ? traineeName.trim().slice(0, 100) : null);
 
   const session = db.prepare('SELECT * FROM sessions WHERE code = ?').get(code);
-  res.status(201).json(buildSnapshot(content, session, sc.id, sc.current_version));
+  res.status(201).json(sessionResponse(content, session, sc.id, sc.current_version));
 });
 
-// 会话列表（便于恢复）
+// 会话列表（便于恢复；标注分支来源与分歧步）
 app.get('/api/sessions', (req, res) => {
   const rows = db.prepare(`
     SELECT se.code, se.scenario_id, s.title AS scenario_title, se.version, se.status,
-           se.step_no, se.trainee_name, se.current_node_id, se.created_at, se.updated_at
+           se.step_no, se.trainee_name, se.current_node_id, se.created_at, se.updated_at,
+           se.parent_code, se.fork_step_no
       FROM sessions se JOIN scenarios s ON s.id = se.scenario_id
      ORDER BY se.updated_at DESC LIMIT 200
   `).all();
@@ -281,11 +292,7 @@ app.get('/api/sessions/:code', (req, res) => {
     .get(session.scenario_id, session.version);
   if (!versionRow) return res.status(500).json({ error: '版本内容缺失' });
   const content = JSON.parse(versionRow.content);
-  const sc = db.prepare('SELECT title FROM scenarios WHERE id = ?').get(session.scenario_id);
-  res.json({
-    ...buildSnapshot(content, session, session.scenario_id, session.version),
-    scenarioTitle: sc ? sc.title : null,
-  });
+  res.json(sessionResponse(content, session, session.scenario_id, session.version));
 });
 
 // 执行一步选择（携带当前步号）
@@ -302,12 +309,42 @@ app.post('/api/sessions/:code/move', (req, res) => {
       current: result.current || null,
     });
   }
-  const sc = db.prepare('SELECT title FROM scenarios WHERE id = ?').get(result.session.scenario_id);
-  res.json({
-    ok: true,
-    ...buildSnapshot(result.content, result.session, result.session.scenario_id, result.session.version),
-    scenarioTitle: sc ? sc.title : null,
+  res.json(sessionResponse(result.content, result.session,
+    result.session.scenario_id, result.session.version));
+});
+
+// 培训师复盘：从历史局面分叉出可继续选择的分支
+// 入参：{ divergenceStepNo, sourceStepNo, traineeName? }
+app.post('/api/sessions/:code/fork', (req, res) => {
+  const source = db.prepare('SELECT * FROM sessions WHERE code = ?').get(req.params.code);
+  const body = req.body || {};
+  const result = performFork(db, {
+    source,
+    divergenceStepNo: body.divergenceStepNo,
+    sourceStepNo: body.sourceStepNo,
+    traineeName: body.traineeName,
   });
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      sourceCurrentStepNo: result.sourceCurrentStepNo ?? null,
+      sourceStatus: result.sourceStatus || null,
+    });
+  }
+  res.status(201).json({
+    ok: true,
+    ...sessionResponse(result.content, result.session,
+      result.session.scenario_id, result.session.version),
+    note: '分支已创建：沿用源会话绑定的冻结版本与分歧步之前的路径，后续选择只推进本分支，源会话不变。',
+  });
+});
+
+// 分支血缘与路径对照：沿 parent_code 追溯到根，并列出根树上的各次分叉
+app.get('/api/sessions/:code/lineage', (req, res) => {
+  const lineage = loadLineage(db, req.params.code);
+  if (!lineage) return res.status(404).json({ error: '会话不存在' });
+  res.json(lineage);
 });
 
 // 兜底：未匹配的 /api 返回 JSON 404

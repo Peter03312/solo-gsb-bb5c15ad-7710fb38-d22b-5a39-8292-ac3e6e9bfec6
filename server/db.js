@@ -38,13 +38,15 @@ function initSchema() {
   CREATE TABLE IF NOT EXISTS sessions (
     code            TEXT PRIMARY KEY,
     scenario_id     TEXT NOT NULL,
-    version         INTEGER NOT NULL,     -- 创建会话时冻结的版本
+    version         INTEGER NOT NULL,     -- 创建会话时冻结的版本（分支沿用源会话的版本）
     current_node_id TEXT NOT NULL,
     state_mask      INTEGER NOT NULL,
     step_no         INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'active',  -- active / ended
     path            TEXT NOT NULL DEFAULT '[]',       -- [{step, fromNodeId, optionId, toNodeId, stateMask}]
     trainee_name    TEXT,
+    parent_code     TEXT,                 -- 分支：源会话码；NULL 表示全新会话
+    fork_step_no    INTEGER,              -- 分支：分歧步号（第 0 步为版本初态）
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (scenario_id, version) REFERENCES versions(scenario_id, version) ON DELETE RESTRICT
@@ -53,6 +55,16 @@ function initSchema() {
   CREATE INDEX IF NOT EXISTS idx_versions_scenario ON versions(scenario_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_scenario ON sessions(scenario_id);
   `);
+
+  // 旧库迁移：为已存在的 sessions 表补充分支字段
+  const cols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
+  if (!cols.includes('parent_code')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN parent_code TEXT');
+  }
+  if (!cols.includes('fork_step_no')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN fork_step_no INTEGER');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_code);');
 }
 
 function newId(prefix) {

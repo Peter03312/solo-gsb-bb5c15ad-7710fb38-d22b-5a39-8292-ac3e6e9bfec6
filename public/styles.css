@@ -182,6 +182,55 @@ code { background: #eef2f6; padding: 1px 6px; border-radius: 4px; font-size: 12p
 .path-list li { margin-bottom: 8px; font-size: 13px; }
 .path-list .pl-sub { color: var(--muted); font-size: 12px; display: block; }
 .path-list .pl-end { color: var(--ok); font-weight: 600; }
+.path-list .pl-inherited { color: var(--muted); }
+.path-list .pl-tag {
+  display: inline-block; font-size: 11px; background: #eef2f6; color: var(--muted);
+  border-radius: 4px; padding: 0 6px; margin-left: 4px; vertical-align: middle;
+}
+.path-list .end-tag { background: var(--err-bg); color: var(--err); }
+.path-list .fork-here { padding: 1px 8px; font-size: 11px; margin-left: 4px; vertical-align: middle; }
+
+/* ---------- 分支来源 / 复盘分叉 ---------- */
+.branch-box {
+  background: #eef6f0;
+  border: 1px solid #bfe0cd;
+  color: #235c3b;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.branch-box .btn { margin-left: 10px; }
+
+.fork-card { background: #fbfdfb; }
+.fork-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.fork-mini {
+  display: inline-block; margin-left: 6px; font-size: 11px;
+  background: #e7f3ec; color: var(--ok); border-radius: 4px; padding: 0 6px;
+}
+
+.lg-chain { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 10px 0 16px; }
+.lg-node {
+  background: #f4f8fc; border: 1px solid var(--line); border-radius: 999px;
+  padding: 3px 12px; font-size: 12px; cursor: pointer;
+}
+.lg-node.cur { background: #e8f0fa; border-color: var(--brand); font-weight: 600; }
+.lg-node:hover { border-color: var(--brand); }
+.lg-arrow { color: var(--muted); }
+.lg-link { cursor: pointer; }
+.lg-link:hover { color: var(--brand); text-decoration: underline; }
+.lg-link.cur-code { background: #e8f0fa; }
+
+.lg-fork {
+  border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px;
+}
+.lg-fork.is-cur { border-color: var(--brand); background: #f8fbff; }
+.lg-fork-head { font-size: 13px; margin-bottom: 8px; }
+.lg-col-head { font-size: 12px; margin: 6px 0 4px; }
+.lg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.lg-path { margin: 0; padding-left: 18px; font-size: 12px; }
+.lg-line { margin-bottom: 4px; }
+.lg-line.shared { color: var(--muted); }
 
 .banner { border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; font-size: 13px; }
 .banner.error { background: var(--err-bg); color: var(--err); border: 1px solid #f5c4bf; }

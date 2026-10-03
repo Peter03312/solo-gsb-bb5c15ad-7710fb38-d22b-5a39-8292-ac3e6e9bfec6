@@ -107,7 +107,7 @@ async function loadSessionList() {
       <tbody>
         ${list.map((s) => `
           <tr>
-            <td><code>${esc(s.code)}</code></td>
+            <td><code>${esc(s.code)}</code>${s.parent_code ? `<span class="fork-mini" title="分支：源会话 ${esc(s.parent_code)}，分歧于第 ${s.fork_step_no} 步">🌿第${s.fork_step_no}步</span>` : ''}</td>
             <td>${esc(s.scenario_title)}</td>
             <td>v${s.version}</td>
             <td class="${s.status === 'active' ? 'status-active' : 'status-ended'}">${s.status === 'active' ? '进行中' : '已结局'}</td>
@@ -151,6 +151,12 @@ function enterSession(snap) {
   $('#trainee-session').hidden = false;
   hideBanner();
   renderSession();
+  renderBranchBox();
+  renderForkCard();
+  $('#fork-name').value = '';
+  $('#fork-msg').textContent = '';
+  $('#lineage-panel').classList.add('hidden');
+  $('#lineage-panel').innerHTML = '';
 }
 
 function hideBanner() {
@@ -204,15 +210,206 @@ function renderSession() {
     optBox.innerHTML = (avail || '<div class="muted">当前没有可选项。</div>') + unavail;
   }
 
-  // 路径
-  $('#path-list').innerHTML = s.path.map((p) => `
-    <li>
+  // 路径：分歧步之前（含）来自源会话的行标注“沿用”；每行可在该步到达的局面分叉（结局步除外）
+  const forkStep = s.branch ? s.branch.forkStepNo : null;
+  $('#path-list').innerHTML = s.path.map((p) => {
+    const isInherited = forkStep !== null && p.step <= forkStep;
+    const snapAtStep = s.path.find((x) => x.step === p.step);
+    const reachesEnd = p.step === s.stepNo && s.status === 'ended';
+    const canForkHere = !reachesEnd;
+    return `
+    <li class="${isInherited ? 'pl-inherited' : ''}">
       <b>第 ${p.step} 步</b>：${esc(p.fromNodeTitle)}
       —「${esc(p.optionLabel)}」→
-      <span class="${p.toNodeTitle && s.status === 'ended' && p.step === s.stepNo ? 'pl-end' : ''}">${esc(p.toNodeTitle)}</span>
+      <span class="${reachesEnd ? 'pl-end' : ''}">${esc(p.toNodeTitle)}</span>
+      ${isInherited ? '<span class="pl-tag">沿源于此</span>' : ''}
+      ${canForkHere ? `<button class="btn sm ghost fork-here" data-fork-at="${p.step}" title="从第 ${p.step} 步到达的局面创建分支">🌿 从此分叉</button>` : '<span class="pl-tag end-tag">结局步不可分叉</span>'}
       <span class="pl-sub">状态：${p.stateAfter.map((x) => `${esc(x.name)}=${x.value ? '是' : '否'}`).join('，') || '无'}</span>
-    </li>`).join('');
+    </li>`;
+  }).join('');
+  if (s.path.length === 0) {
+    $('#path-list').innerHTML = '<li class="muted">尚无已完成的选择（当前为第 0 步）。</li>';
+  }
 }
+
+// 分支来源横幅
+function renderBranchBox() {
+  const box = $('#ses-branch');
+  const b = currentSession && currentSession.branch;
+  if (!b) {
+    box.className = 'branch-box hidden';
+    box.innerHTML = '';
+    return;
+  }
+  box.className = 'branch-box';
+  box.innerHTML = `
+    🌿 本会话是分支：分叉自源会话 <code>${esc(b.parentCode)}</code> 的<b>第 ${b.forkStepNo} 步</b>
+    （沿用冻结版本 v${currentSession.version} 与到达该步之前已完成的路径），根会话 <code>${esc(b.rootCode)}</code>。
+    源会话与其它分支不受本分支后续选择影响。
+    <button class="btn sm" id="btn-open-parent">打开源会话</button>`;
+}
+
+// 复盘分叉卡片的步号范围提示
+function renderForkCard() {
+  const s = currentSession;
+  if (!s) return;
+  const hint = $('#fork-range-hint');
+  const input = $('#fork-step');
+  if (!hint || !input) return;
+  if (s.status === 'ended') {
+    if (s.stepNo <= 0) {
+      hint.textContent = '会话在第 0 步即结局，无可分叉的非结局步';
+      input.max = '-1';
+    } else {
+      hint.textContent = `源会话已结束：可在第 0～${s.stepNo - 1} 步（非结局步）分叉`;
+      input.max = String(s.stepNo - 1);
+    }
+  } else {
+    hint.textContent = `可在第 0～${s.stepNo} 步分叉（当前第 ${s.stepNo} 步）`;
+    input.max = String(s.stepNo);
+  }
+  if (Number(input.value) > Number(input.max)) input.value = Math.max(0, Number(input.max));
+}
+
+async function createFork(divergenceStepNo) {
+  const s = currentSession;
+  if (!s) return;
+  const d = Number.isInteger(divergenceStepNo) ? divergenceStepNo : parseInt($('#fork-step').value, 10);
+  if (!Number.isInteger(d)) {
+    $('#fork-msg').innerHTML = '<span style="color:var(--err)">请输入整数分歧步号</span>';
+    return;
+  }
+  const traineeName = $('#fork-name').value.trim();
+  const msg = $('#fork-msg');
+  msg.textContent = '创建中…';
+  try {
+    const snap = await api(`/api/sessions/${s.code}/fork`, {
+      method: 'POST',
+      body: { divergenceStepNo: d, sourceStepNo: s.stepNo, traineeName: traineeName || undefined },
+    });
+    msg.textContent = '';
+    toast(`已从第 ${d} 步创建分支 ${snap.code}`, 'ok');
+    enterSession(snap);
+    await loadLineage();
+  } catch (err) {
+    const cur = err.data && err.data.current;
+    const curStep = (err.data && err.data.sourceCurrentStepNo) ?? null;
+    if (cur && currentSession) {
+      currentSession = { ...currentSession, ...cur, scenarioTitle: currentSession.scenarioTitle };
+      renderSession();
+      renderForkCard();
+    } else if (curStep !== null && currentSession && curStep !== currentSession.stepNo) {
+      // 源会话已被推进：拉取最新现状再渲染（不创建分支）
+      try {
+        const fresh = await api(`/api/sessions/${currentSession.code}`);
+        currentSession = fresh;
+        renderSession();
+        renderBranchBox();
+        renderForkCard();
+      } catch (_) { /* 忽略刷新失败 */ }
+    }
+    msg.innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`
+      + (curStep !== null ? ` <span class="muted">（源会话当前步号：${curStep}，未创建分支）</span>` : '');
+    toast(err.message, 'err');
+  }
+}
+
+$('#btn-fork').addEventListener('click', () => createFork());
+$('#fork-step').addEventListener('keydown', (e) => { if (e.key === 'Enter') createFork(); });
+
+// 路径行上的“从此分叉”
+$('#path-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-fork-at]');
+  if (btn) createFork(Number(btn.dataset.forkAt));
+});
+
+// 打开源会话
+$('#ses-branch').addEventListener('click', async (e) => {
+  if (!e.target.closest('#btn-open-parent')) return;
+  const code = currentSession.branch && currentSession.branch.parentCode;
+  if (!code) return;
+  try {
+    const snap = await api(`/api/sessions/${encodeURIComponent(code)}`);
+    enterSession(snap);
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+// ---------- 分支对照 ----------
+$('#btn-show-lineage').addEventListener('click', () => loadLineage());
+
+async function loadLineage() {
+  if (!currentSession) return;
+  try {
+    const data = await api(`/api/sessions/${currentSession.code}/lineage`);
+    renderLineage(data);
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+function renderLineage(data) {
+  const panel = $('#lineage-panel');
+  panel.classList.remove('hidden');
+
+  const chain = data.ancestry.map((s, i) =>
+    `<span class="lg-node ${s.code === currentSession.code ? 'cur' : ''}" data-open-ses="${esc(s.code)}">
+       ${i === 0 ? '🌱 ' : '🌿 '}${esc(s.code)}
+       <span class="muted">v${s.version}·${s.status === 'ended' ? `结局@${s.stepNo}` : `第${s.stepNo}步`}</span>
+     </span>${i < data.ancestry.length - 1 ? '<span class="lg-arrow">→</span>' : ''}`
+  ).join('');
+
+  panel.innerHTML = `
+    <h4>🌿 分支对照（根会话 <code>${esc(data.root.code)}</code>，冻结版本 v${data.root.version}）</h4>
+    <div class="lg-chain">${chain}</div>
+    <div id="lg-forks"></div>`;
+
+  const forksBox = $('#lg-forks');
+  forksBox.innerHTML = data.forks.map((f) => {
+    // 源会话的完整快照（含旁支源会话）
+    const parentSnap = data.sessions.find((x) => x.code === f.parent.code) || f.parent;
+    const parentAfter = (parentSnap.path || []).filter((p) => p.step > f.forkStepNo);
+    const branchAfter = (f.branch.path || []).filter((p) => p.step > f.forkStepNo);
+    const renderAfter = (arr) => arr.length
+      ? arr.map((p) => `<li class="lg-line"><b>第${p.step}步</b> ${esc(p.fromNodeTitle)} —「${esc(p.optionLabel)}」→ ${esc(p.toNodeTitle)}</li>`).join('')
+      : '<span class="muted">（分歧后尚未继续选择）</span>';
+    const sharedBefore = (f.branch.path || []).filter((p) => p.step <= f.forkStepNo);
+    const sharedHtml = sharedBefore.length
+      ? sharedBefore.map((p) => `<li class="lg-line shared"><b>第${p.step}步</b> ${esc(p.fromNodeTitle)} —「${esc(p.optionLabel)}」→ ${esc(p.toNodeTitle)}</li>`).join('')
+      : '<li class="lg-line shared muted">第 0 步（版本初态），无已完成选择</li>';
+    return `
+    <div class="lg-fork ${f.branch.code === currentSession.code ? 'is-cur' : ''}">
+      <div class="lg-fork-head">
+        源会话 <code class="lg-link" data-open-ses="${esc(f.parent.code)}">${esc(f.parent.code)}</code>
+        <span class="muted">（${f.parent.status === 'ended' ? `已结局于第 ${f.parent.stepNo} 步` : `进行中·当前第 ${f.parent.stepNo} 步`}）</span>
+        在 <b>第 ${f.forkStepNo} 步</b> 分叉 →
+        <code class="lg-link ${f.branch.code === currentSession.code ? 'cur-code' : ''}" data-open-ses="${esc(f.branch.code)}">${esc(f.branch.code)}</code>
+        <span class="muted">（${f.branch.status === 'ended' ? `已结局于第 ${f.branch.stepNo} 步` : `进行中·当前第 ${f.branch.stepNo} 步`}；学员 ${esc(f.branch.traineeName || '—')}）</span>
+      </div>
+      <div class="muted lg-col-head">分歧步之前的共同路径（分支沿用）</div>
+      <ol class="lg-path">${sharedHtml}</ol>
+      <div class="lg-grid">
+        <div class="lg-col">
+          <div class="muted lg-col-head">源会话分歧后的后续路径</div>
+          <ol class="lg-path">${renderAfter(parentAfter)}</ol>
+        </div>
+        <div class="lg-col">
+          <div class="muted lg-col-head">分支分歧后的后续路径</div>
+          <ol class="lg-path">${renderAfter(branchAfter)}</ol>
+        </div>
+      </div>
+    </div>`;
+  }).join('') || '<div class="muted">该会话尚无分支。</div>';
+
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// 血缘面板中点击会话码即打开
+$('#lineage-panel').addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-open-ses]');
+  if (!el) return;
+  try {
+    const snap = await api(`/api/sessions/${encodeURIComponent(el.dataset.openSes)}`);
+    enterSession(snap);
+  } catch (err) { toast(err.message, 'err'); }
+});
 
 function condText(snap, c) {
   const st = snap.states.find((x) => x.id === c.stateId);
@@ -234,6 +431,7 @@ $('#option-list').addEventListener('click', async (e) => {
     currentSession = snap;
     hideBanner();
     renderSession();
+    renderForkCard();
     loadSessionList();
   } catch (err) {
     // 过期/不满足条件：展示服务器返回的原因与现状，不推进
@@ -241,6 +439,7 @@ $('#option-list').addEventListener('click', async (e) => {
     if (err.data && err.data.current) {
       currentSession = { ...currentSession, ...err.data.current, scenarioTitle: currentSession.scenarioTitle };
       renderSession();
+      renderForkCard();
     }
     showBanner(`选择被拒绝：${reason}`, 'error');
   }

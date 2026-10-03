@@ -11,6 +11,7 @@
   - 不满足则给出**可复现路径**（含每一步的状态快照，以及具体的循环段）并**拒绝发布**。
 - 每次发布**冻结完整内容**为新版本：进行中的会话继续沿原版本完成，新会话使用最新版
 - 每步选择必须携带**当前步号**；步号过期/重复、条件不满足、选项不存在等情况一律返回**原因和现状**，且不推进会话
+- 培训师可凭**源会话码、分歧步号、所见的源当前步号**，从历史局面创建**可继续选择的分支**（复盘分叉）；分支沿用冻结版本，已结束会话也可从此前的非结局步分叉，支持再次分叉与路径对照
 - 草稿中的**无效引用**（不存在的状态/目标节点）与**矛盾条件**（同一状态同时要求是和否）在保存时即被拒绝
 
 ---
@@ -83,7 +84,7 @@ npm start
 | `APP_PORT`（仅 Compose） | `8080` | 宿主机映射端口，改它即可，无需改 Dockerfile |
 | `TZ` | `Asia/Shanghai` | 容器时区（影响时间显示） |
 
-数据库表：`scenarios`（情境及草稿）、`versions`（每次发布冻结的完整内容）、`sessions`（学员会话：步号、状态位掩码、已走路径、绑定版本）。
+数据库表：`scenarios`（情境及草稿）、`versions`（每次发布冻结的完整内容）、`sessions`（学员会话：步号、状态位掩码、已走路径、绑定版本；分支另用 `parent_code`/`fork_step_no` 记录来源会话与分歧步）。
 
 ---
 
@@ -112,6 +113,26 @@ npm start
 4. 右侧“已走路径”逐步记录：第几步、在哪个节点、选了什么、到达哪里、当时状态；
 5. 可凭 **10 位会话码** 或下方列表随时“继续”未完成的演练；到达结局后会话结束。
 
+### 培训师复盘：从历史步分叉（🌿）
+
+复盘演练时，可在**学员会话页右侧“培训师复盘：从历史步分叉”**卡片（或在“已走路径”任一行点“🌿 从此分叉”）创建分支：
+
+1. 填写**分歧步号**（第 0 步为该冻结版本的初态；取值范围 0 ～ 源会话当前步号），并提交创建时所见的**源当前步号**（页面自动携带）；
+2. 分支沿用**源会话绑定的冻结版本**，保留到达分歧步现场之前已完成的**路径与该步现场状态**，从该步起可重新选择；分支步号与源会话在分歧点保持一致，后续选择只推进分支；
+3. **原会话与其它分支不受影响**；分支与普通会话使用同一套步号校验（`STEP_STALE` 等）与版本绑定规则；
+4. **已结束会话**也可从此前的**非结局步**分叉；**结局步不得分叉**；
+5. 分支**可以再次分叉**；会话页顶部绿色横幅展示分支**来源与分歧步**，点“查看分支对照”可看到根会话链、每次分叉的来源/分歧步，以及“共同路径 / 源会话后续 / 分支后续”的并排对照。
+
+创建被拒绝时（不创建任何分支）会说明原因；能定位到源会话时同时返回其**当前步号**：
+
+| 情形 | errorCode | HTTP |
+| --- | --- | --- |
+| 源会话步号已变化（所见步号过期） | `STEP_STALE`（附 `sourceCurrentStepNo`） | 409 |
+| 分歧点越界（非整数 / <0 / >当前步号） | `FORK_STEP_OUT_OF_RANGE`（附 `sourceCurrentStepNo`） | 400 |
+| 分歧步是结局步 | `FORK_AT_ENDING_STEP`（附 `sourceCurrentStepNo`） | 409 |
+| 源会话不存在 | `SESSION_NOT_FOUND` | 404 |
+| 源会话绑定版本缺失 | `VERSION_MISSING` | 500 |
+
 ---
 
 ## 五、发布检查规则（核心）
@@ -134,6 +155,23 @@ npm start
 - 条件不满足 → `409 CONDITION_NOT_MET`，逐条列出哪个状态需要是/否，返回现状，不推进；
 - 选项不属于当前节点 → `400 OPTION_NOT_FOUND`；会话已结束 → `409 SESSION_ENDED`。
 
+### 复盘分叉规则
+
+分叉请求 `POST /api/sessions/:code/fork`，路径中的 `:code` 为**源会话码**，请求体：
+
+- `divergenceStepNo`（必填，整数）：分歧步号。第 0 步 = 源会话绑定版本的初态（起点节点 + 初始状态，路径为空）；`k>0` 时取源会话“第 k 步选择完成后”记录的节点与现场状态，分支当前步号为 `k`，并保留源路径中第 1～k 步作为“沿流”路径；
+- `sourceStepNo`（必填，整数）：**创建时所见的源当前步号**。服务端与源会话当前步号严格比对，不一致即 `409 STEP_STALE`（防止源会话已被推进后误用旧现场），响应体带 `sourceCurrentStepNo`，不创建；
+- `traineeName`（可选）：分支学员名，缺省时沿用源会话学员名。
+
+校验：源会话存在（`404 SESSION_NOT_FOUND`）、绑定版本存在（`500 VERSION_MISSING`）、分歧点在 `0..源当前步号` 内（`400 FORK_STEP_OUT_OF_RANGE`）、分歧步节点不是结局（`409 FORK_AT_ENDING_STEP`，已结束会话只能从此前非结局步分叉）。任何失败都**不创建分支**。
+
+成功响应即新分支的会话现状快照（与 `GET /api/sessions/:code` 同构），并额外带：
+
+- `branch.parentCode`：直接来源会话码；`branch.forkStepNo`：分歧步号；`branch.rootCode`：沿分叉链追溯到的根会话码；`branch.chain`：根→本会话的逐次分叉链；
+- `note`：创建说明。
+
+分支之后与普通会话完全一致：继续调用 `POST /api/sessions/:code/move`（携带分支自己的 `stepNo`）推进；分支可以再次作为源会话被分叉。
+
 ---
 
 ## 六、主要 HTTP 接口
@@ -143,15 +181,59 @@ npm start
 | GET | `/api/health` | 健康检查 |
 | GET | `/api/published` | 已发布情境列表（学员） |
 | POST | `/api/sessions` | `{scenarioId, traineeName?}` 开始新会话（绑定最新版） |
-| GET | `/api/sessions/:code` | 查询会话现状（可选项/状态/路径） |
+| GET | `/api/sessions/:code` | 查询会话现状（可选项/状态/路径；分支附 `branch` 来源信息） |
 | POST | `/api/sessions/:code/move` | `{optionId, stepNo}` 执行一步；失败返回原因与现状 |
-| GET | `/api/sessions` | 最近会话列表 |
+| POST | `/api/sessions/:code/fork` | `{divergenceStepNo, sourceStepNo, traineeName?}` 从源会话的历史步分叉创建分支 |
+| GET | `/api/sessions/:code/lineage` | 分支血缘与路径对照（根会话链、各次分叉的来源/分歧步及各自后续路径） |
+| GET | `/api/sessions` | 最近会话列表（分支附 `parent_code`、`fork_step_no`） |
 | GET | `/api/scenarios` | 培训师情境列表 |
 | POST | `/api/scenarios` | 新建（首版草稿，结构校验） |
 | GET | `/api/scenarios/:id` | 草稿 + 版本清单 |
 | PUT | `/api/scenarios/:id/draft` | 保存草稿（无效引用/矛盾条件拒绝） |
 | POST | `/api/scenarios/:id/analyze` | 发布前检查（可带未保存草稿） |
 | POST | `/api/scenarios/:id/publish` | 发布冻结新版本（检查不过返回 422 与可复现路径） |
+
+### 复盘分叉调用示例（curl）
+
+```bash
+BASE=http://localhost:8080
+SRC=312961ff27   # 10 位源会话码（GET /api/sessions 可查）
+
+# 1) 先查源会话现状，取得当前步号 stepNo（本例源会话已结束于第 3 步）
+curl -s $BASE/api/sessions/$SRC | jq '{code, stepNo, status, node: .currentNode.title}'
+
+# 2) 从源会话的第 2 步创建分支；sourceStepNo 必须等于上面看到的当前步号
+curl -s -X POST $BASE/api/sessions/$SRC/fork \
+  -H 'Content-Type: application/json' \
+  -d '{"divergenceStepNo": 2, "sourceStepNo": 3, "traineeName": "复盘-王培训师"}' | jq \
+  '{code, version, stepNo, node: .currentNode.title, inheritedPath: [.path[].step], branch}'
+
+# 成功响应（节选）：
+# {
+#   "code": "f8ea17cc67", "version": 1, "stepNo": 2,
+#   "node": "安全区建立指挥点",
+#   "inheritedPath": [1, 2],
+#   "branch": { "parentCode": "312961ff27", "forkStepNo": 2, "rootCode": "312961ff27", "chain": [...] }
+# }
+
+# 3) 在分支上继续选择（stepNo 用分支自己的当前步号 2）
+curl -s -X POST $BASE/api/sessions/f8ea17cc67/move \
+  -H 'Content-Type: application/json' \
+  -d '{"optionId": "o_report", "stepNo": 2}' | jq '{stepNo, node: .currentNode.title, status}'
+
+# 4) 分支再次分叉 / 查看来源与路径对照
+curl -s -X POST $BASE/api/sessions/f8ea17cc67/fork \
+  -H 'Content-Type: application/json' -d '{"divergenceStepNo": 3, "sourceStepNo": 3}'
+curl -s $BASE/api/sessions/f8ea17cc67/lineage | jq \
+  '{root: .root.code, ancestry: [.ancestry[].code], forks: [.forks[] | {parent: .parent.code, at: .forkStepNo, branch: .branch.code, then: [.branch.path[].step]}]}'
+
+# 失败示例：源会话已被推进、所见步号过期（不创建，返回源当前步号）
+#   HTTP 409 {"errorCode":"STEP_STALE","sourceCurrentStepNo":4,...}
+# 失败示例：分歧点是结局步
+#   HTTP 409 {"errorCode":"FORK_AT_ENDING_STEP","sourceCurrentStepNo":3,...}
+```
+
+页面操作：打开任一会话 → 右侧“🌿 培训师复盘：从历史步分叉”卡片输入分歧步号 → “创建分支并进入”；或在“已走路径”某行点“🌿 从此分叉”，再点“查看分支对照”。
 
 ---
 
@@ -166,7 +248,7 @@ npm start
 │   ├── server.js      # Express 路由（编排 / 发布 / 会话接口）
 │   ├── db.js          # SQLite 连接、建表、id 生成
 │   ├── scenario.js    # 草稿校验 + 状态空间可达性/死路/循环分析
-│   ├── session.js     # 会话快照与“带步号的一步”推进规则
+│   ├── session.js     # 会话快照、“带步号的一步”推进规则、复盘分叉与分支血缘
 │   └── seed.js        # 内置示例情境（首启写入）
 ├── public/
 │   ├── index.html     # 单页界面（学员演练 / 培训师编排两个页签）
